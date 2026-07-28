@@ -1,0 +1,29 @@
+# Windows
+desktop.ini
+Thumbs.db
+$RECYCLE.BIN/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors
+.vscode/
+.idea/
+
+# Subtitle working files
+*.srt
+__orig__*
