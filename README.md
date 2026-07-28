@@ -40,7 +40,17 @@ one. Use dry-run mode and spot-check the output on an unfamiliar batch.
 
 ## Status
 
-Working CLI. A folder-picker GUI is planned — see [docs/superpowers/specs/](docs/superpowers/specs/).
+Working CLI, with known defects documented below. A folder-picker GUI and a corrected
+`greek_srt` core package are specified in full in
+[the implementation brief](docs/superpowers/specs/2026-07-28-greek-srt-gui-design.md).
+
+Known defects in the current script, all fixed by that brief:
+
+- `clean_for_iso_8859_7()` is never called, so the ISO-8859-7 mode silently falls back to UTF-8
+- encoding detection validates only a buffered prefix, and `iso-8859-7` acts as a catch-all that
+  prevents CP1253 from ever being returned
+- writes truncate the target before writing, so an interruption destroys the subtitle
+- `__orig__*.srt` backups match the `*.srt` glob, so a second run converts its own backups
 
 ## License
 
