@@ -41,7 +41,7 @@ def _unreadable(path: Path, target: Target, st: FileStamp, why: str) -> FileRepo
                       loss_ratio=0.0, preview=(), error=why)
 
 
-def scan_one(path: Path, target: Target) -> FileReport:
+def scan_one(path: Path, target: Target, time_offset_ms: int = 0) -> FileReport:
     """Inspect one file. Opens it read-only. Never raises for a per-file problem."""
     zero = FileStamp(0, 0)
     try:
@@ -73,28 +73,35 @@ def scan_one(path: Path, target: Target) -> FileReport:
         return _unreadable(path, target, st, "no SubRip timecode line found")
 
     try:
-        rendered = _clean.render(text, target)
+        rendered = _clean.render(text, target, time_offset_ms=time_offset_ms)
     except _clean.StructureChanged as exc:
         return _unreadable(path, target, st, str(exc))
     except UnicodeEncodeError as exc:
         return _unreadable(path, target, st, f"{type(exc).__name__}: {exc}")
 
-    if rendered.data == raw:
+    if rendered.data == raw and time_offset_ms == 0:
         action = Action.ALREADY_TARGET
     elif target is Target.ISO_8859_7 and rendered.loss_ratio > LOSS_GUARD:
         action = Action.NEEDS_REVIEW
     else:
         action = Action.CONVERT
 
+    # If time offset is set, update preview lines to reflect shifted timing
+    if time_offset_ms != 0:
+        shifted_text = _clean.shift_document_timing(text, time_offset_ms)
+        lines = _clean.split_lines(shifted_text)
+
     return FileReport(
         path=path, stamp=st, encoding=det.encoding, confidence=det.confidence,
         action=action, target=target, lossy=rendered.lossy,
         loss_ratio=rendered.loss_ratio,
         preview=tuple(lines[:PREVIEW_LINES]), error=None,
+        time_offset_ms=time_offset_ms,
     )
 
 
 def scan(folder, *, recursive: bool = False, target: Target,
+         time_offset_ms: int = 0,
          on_progress: ProgressCallback | None = None,
          cancel: threading.Event | None = None) -> list[FileReport]:
     """Inspect every .srt file under `folder`. Opens files read-only; NEVER writes."""
@@ -112,7 +119,7 @@ def scan(folder, *, recursive: bool = False, target: Target,
     for i, path in enumerate(paths, 1):
         if cancel is not None and cancel.is_set():
             break
-        report = scan_one(path, target)
+        report = scan_one(path, target, time_offset_ms=time_offset_ms)
         reports.append(report)
         if on_progress is not None:
             on_progress(Progress("scan", i, total, path, report=report))
@@ -124,7 +131,7 @@ def _failed(report: FileReport, code: str, detail: str) -> ConvertResult:
                          source_encoding=report.encoding,
                          target_encoding=report.target.codec, backup="not-needed",
                          backup_path=None, lossy=report.lossy, bytes_written=0,
-                         error=detail)
+                         error=detail, time_offset_ms=report.time_offset_ms)
 
 
 def _convert_one(report: FileReport, *, backup: bool) -> ConvertResult:
@@ -135,14 +142,15 @@ def _convert_one(report: FileReport, *, backup: bool) -> ConvertResult:
 
     raw = _io.read_bytes(src)
     text = raw.decode(_detect.read_codec(report.encoding)).replace("\ufeff", "")
-    rendered = _clean.render(text, report.target)     # encode happens BEFORE any write
+    rendered = _clean.render(text, report.target, time_offset_ms=report.time_offset_ms)     # encode happens BEFORE any write
 
-    if rendered.data == raw:
+    if rendered.data == raw and report.time_offset_ms == 0:
         return ConvertResult(path=src, ok=True, status="unchanged", code=None,
                              source_encoding=report.encoding,
                              target_encoding=report.target.codec,
                              backup="not-needed", backup_path=None,
-                             lossy=rendered.lossy, bytes_written=0, error=None)
+                             lossy=rendered.lossy, bytes_written=0, error=None,
+                             time_offset_ms=report.time_offset_ms)
 
     if backup:
         backup_status, backup_path = _io.write_backup(src)
@@ -155,7 +163,7 @@ def _convert_one(report: FileReport, *, backup: bool) -> ConvertResult:
                          target_encoding=report.target.codec,
                          backup=backup_status, backup_path=backup_path,
                          lossy=rendered.lossy, bytes_written=len(rendered.data),
-                         error=None)
+                         error=None, time_offset_ms=report.time_offset_ms)
 
 
 def convert(reports: Sequence[FileReport], *, backup: bool = True,

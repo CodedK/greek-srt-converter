@@ -237,12 +237,16 @@ def _to_lossy(replaced: dict[str, tuple[str, int]], dropped: dict[str, int]
     return tuple(items)
 
 
-def render(text: str, target: Target) -> Rendered:
+def render(text: str, target: Target, time_offset_ms: int = 0) -> Rendered:
     """The EXACT bytes convert() will write. Pure; the single source of truth.
 
     Preconditions: `text` has already had every U+FEFF removed by the caller.
     Postcondition for ISO_8859_7: the encode cannot raise (fuzz-verified).
     """
+    if time_offset_ms != 0:
+        from .timing import shift_document_timing
+        text = shift_document_timing(text, time_offset_ms)
+
     if target is Target.ISO_8859_7:
         folded, replaced, dropped = fold_document(text)
     else:

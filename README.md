@@ -23,7 +23,10 @@ python cli.py
 ## Features & Highlights
 
 - **Dual Interfaces**: Modern, DPI-aware Tkinter GUI ([`gui.py`](file:///c:/Users/CodedK/Desktop/Git/Subtitles/gui.py)) and interactive CLI ([`cli.py`](file:///c:/Users/CodedK/Desktop/Git/Subtitles/cli.py)).
-- **Scan/Preview Phase**: Complete preview of actions (`CONVERT`, `ALREADY_TARGET`, `NEEDS_REVIEW`, `UNREADABLE`) and lossy character replacements before any bytes are written to disk.
+- **Subtitle Timecode Shifting**: Shift timecodes forward or backward by seconds or milliseconds (e.g., `+2.0s`, `-1.5s`) with preset controls and format preservation.
+- **Dark Mode Theme Support**: Seamless Light / Dark theme switching in `gui.py`.
+- **Recent Folders History**: Combobox remembering up to 10 recently processed directories.
+- **Scan/Preview Phase**: Complete preview of actions (`CONVERT`, `ALREADY_TARGET`, `NEEDS_REVIEW`, `UNREADABLE`), character replacements, and shifted timecodes before any bytes are written to disk.
 - **Accurate Encoding Detection**: Heuristic scoring engine over complete file buffers distinguishing CP1253, ISO-8859-7, UTF-8 (BOM/BOM-less), UTF-16, UTF-32, CP1252, and ASCII.
 - **Safe ISO-8859-7 Folding**: Map non-encodable characters (smart quotes, dialogue dashes, currency symbols, ligatures) safely without altering SubRip timecodes or cue structure.
 - **`NEEDS_REVIEW` Safety Guard**: Automatically flags non-Greek subtitles (e.g. CJK or foreign language subtitles) when targeting ISO-8859-7 if character loss exceeds 20%.
@@ -31,6 +34,21 @@ python cli.py
 - **Line Ending Preservation**: Preserves original CRLF, LF, or CR line endings without forced universal newline translations.
 - **No BOM Policy**: Never outputs Byte Order Marks (`EF BB BF`), ensuring compatibility with strict subtitle parsers.
 - **Safe Backups**: Preserves pristine original files as `__orig__<name>.srt` without overwriting existing backups on subsequent runs.
+
+---
+
+## Explorer Right-Click Context Menu Integration
+
+To add a right-click menu item in Windows Explorer (*"Convert Greek SRT Subtitles here"*):
+
+```bash
+python setup_context_menu.py install
+```
+
+To remove the context menu registration:
+```bash
+python setup_context_menu.py uninstall
+```
 
 ---
 

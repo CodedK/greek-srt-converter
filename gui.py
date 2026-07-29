@@ -69,13 +69,16 @@ def row_text(report: FileReport) -> tuple[str, list[str], bool]:
                 ["review"], False)
     if report.dropped_count:
         return f"{report.dropped_count} chars stripped (!)", ["warn"], True
-    if report.encoding == "utf-8-sig" and report.target is Target.UTF_8:
+    if report.encoding == "utf-8-sig" and report.target is Target.UTF_8 and report.time_offset_ms == 0:
         return "will convert (BOM removed)", [], True
+    if report.time_offset_ms != 0:
+        sec = report.time_offset_ms / 1000.0
+        return f"will convert (shift {sec:+.1f}s)", [], True
     return "will convert", [], True
 
 
 class ConverterApp(ttk.Frame):
-    def __init__(self, master: tk.Tk) -> None:
+    def __init__(self, master: tk.Tk, initial_folder: str = "") -> None:
         super().__init__(master, padding=0)
         self.root: tk.Tk = master
         self.settings = load_settings()
@@ -85,14 +88,28 @@ class ConverterApp(ttk.Frame):
         self._after_id: str | None = None
         self.checked: dict[str, bool] = {}
         self.reports: dict[str, FileReport] = {}
+        self.recent_folders: list[str] = self.settings.get("recent_folders", [])
+
+        if initial_folder and os.path.isdir(initial_folder):
+            self.settings["last_folder"] = initial_folder
+            self._add_recent_folder(initial_folder)
 
         self.mono = pick_mono_font(master)
-        self._init_style()
         self.pack(fill="both", expand=True)
         self._build()
+        self._init_style()
         master.protocol("WM_DELETE_WINDOW", self.on_close)
 
-    # ------------------------------------------------------------- style
+    def _add_recent_folder(self, folder: str) -> None:
+        folder = os.path.normpath(folder)
+        if folder in self.recent_folders:
+            self.recent_folders.remove(folder)
+        self.recent_folders.insert(0, folder)
+        self.recent_folders = self.recent_folders[:10]
+        if hasattr(self, "folder_combo"):
+            self.folder_combo.configure(values=self.recent_folders)
+
+    # ------------------------------------------------------------- style & theme
     def _init_style(self) -> None:
         style = ttk.Style()
         if "vista" in style.theme_names():
@@ -102,22 +119,58 @@ class ConverterApp(ttk.Frame):
         style.configure("Treeview", rowheight=self.row_height)
         style.configure("Treeview.Heading", padding=(6, 4))
         style.configure("TButton", padding=(10, 4))
+        self._apply_theme()
+
+    def _apply_theme(self) -> None:
+        dark = self.dark_var.get()
+        style = ttk.Style()
+        base = tkfont.nametofont("TkDefaultFont")
+
+        bg_color = "#1e1e1e" if dark else "#f0f0f0"
+        fg_color = "#d4d4d4" if dark else "#111111"
+        text_bg = "#2d2d2d" if dark else "#ffffff"
+        tree_bg = "#252526" if dark else "#ffffff"
+        stripe_bg = "#2a2d32" if dark else "#f5f7fa"
+        warn_fg = "#e5c07b" if dark else "#b35c00"
+        bad_fg = "#e06c75" if dark else "#c02626"
+        skip_fg = "#7f848e" if dark else "#8a8a8a"
+
+        self.root.configure(background=bg_color)
+        self.preview.configure(background=text_bg, foreground=fg_color, insertbackground=fg_color)
+        self.status.configure(background=bg_color, foreground=fg_color)
+
+        if dark:
+            style.configure("Treeview", background=tree_bg, foreground=fg_color, fieldbackground=tree_bg)
+            style.configure("Treeview.Heading", background="#333333", foreground="#ffffff")
+        else:
+            style.configure("Treeview", background="#ffffff", foreground="#111111", fieldbackground="#ffffff")
+
+        self.tree.tag_configure("stripe", background=stripe_bg)
+        self.tree.tag_configure("warn", foreground=warn_fg)
+        self.tree.tag_configure("skip", foreground=skip_fg)
+        self.tree.tag_configure("bad", foreground=bad_fg)
+        self.tree.tag_configure(
+            "review", foreground=bad_fg,
+            font=(base.actual("family"), base.actual("size"), "bold"))
 
     # ------------------------------------------------------------- widgets
     def _build(self) -> None:
         base = tkfont.nametofont("TkDefaultFont")
 
+        # Top bar: Folder picking with Combobox
         top = ttk.Frame(self, padding=(12, 10, 12, 4))
         top.pack(fill="x")
         ttk.Label(top, text="Folder:").grid(row=0, column=0, sticky="w")
         self.folder_var = tk.StringVar(value=self.settings.get("last_folder", ""))
-        ttk.Entry(top, textvariable=self.folder_var).grid(row=0, column=1, sticky="ew", padx=6)
+        self.folder_combo = ttk.Combobox(top, textvariable=self.folder_var, values=self.recent_folders)
+        self.folder_combo.grid(row=0, column=1, sticky="ew", padx=6)
         ttk.Button(top, text="Browse\u2026", command=self.browse).grid(row=0, column=2)
         self.recurse_var = tk.BooleanVar(value=bool(self.settings.get("recurse", False)))
         ttk.Checkbutton(top, text="Recurse", variable=self.recurse_var,
                         onvalue=True, offvalue=False).grid(row=0, column=3, padx=(12, 0))
         top.columnconfigure(1, weight=1)
 
+        # Mode and Time Shift bar
         mode = ttk.Frame(self, padding=(12, 4))
         mode.pack(fill="x")
         ttk.Label(mode, text="Mode:").pack(side="left")
@@ -126,9 +179,21 @@ class ConverterApp(ttk.Frame):
                         value="utf-8").pack(side="left", padx=(8, 0))
         ttk.Radiobutton(mode, text="Greek ISO-8859-7", variable=self.target_var,
                         value="iso-8859-7").pack(side="left", padx=(10, 0))
+
+        ttk.Label(mode, text="Time Shift:").pack(side="left", padx=(16, 0))
+        self.offset_var = tk.StringVar(value="0.0")
+        ttk.Entry(mode, textvariable=self.offset_var, width=6).pack(side="left", padx=(4, 0))
+        ttk.Label(mode, text="s").pack(side="left")
+
+        # Preset buttons for time offset
+        for label, val in [("-2s", "-2.0"), ("-0.5s", "-0.5"), ("0s", "0.0"), ("+0.5", "+0.5"), ("+2s", "+2.0")]:
+            ttk.Button(mode, text=label, width=4,
+                       command=lambda v=val: self.offset_var.set(v)).pack(side="left", padx=1)
+
         self.scan_btn = ttk.Button(mode, text="Scan", command=self.start_scan)
         self.scan_btn.pack(side="right")
 
+        # Main Table (Treeview)
         mid = ttk.Frame(self, padding=(12, 6))
         mid.pack(fill="both", expand=True)
         self.tree = ttk.Treeview(mid, columns=("sel", "file", "encoding", "status"),
@@ -149,18 +214,12 @@ class ConverterApp(ttk.Frame):
         mid.rowconfigure(0, weight=1)
         mid.columnconfigure(0, weight=1)
 
-        self.tree.tag_configure("stripe", background="#f5f7fa")
-        self.tree.tag_configure("warn", foreground="#b35c00")
-        self.tree.tag_configure("skip", foreground="#8a8a8a")
-        self.tree.tag_configure("bad", foreground="#c02626")
-        self.tree.tag_configure(
-            "review", foreground="#c02626",
-            font=(base.actual("family"), base.actual("size"), "bold"))
         self.tree.bind("<Button-1>", self.on_tree_click, add="+")
         self.tree.bind("<space>", self.on_space)
         self.root.bind("<Control-a>", lambda e: self.select_all_keyboard())
         self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
 
+        # Subtitle Preview Pane
         pane = ttk.LabelFrame(self, text="Preview", padding=(8, 6))
         pane.pack(fill="both", expand=True, padx=12, pady=(0, 6))
         self.preview = tk.Text(pane, height=9, wrap="none", undo=False,
@@ -177,11 +236,17 @@ class ConverterApp(ttk.Frame):
         pane.columnconfigure(0, weight=1)
         self.preview.configure(state="disabled")
 
+        # Bottom Bar: Controls, Options, Progress
         bottom = ttk.Frame(self, padding=(12, 0, 12, 10))
         bottom.pack(fill="x")
         self.backup_var = tk.BooleanVar(value=bool(self.settings.get("backup", True)))
         ttk.Checkbutton(bottom, text="Backup originals", variable=self.backup_var,
                         onvalue=True, offvalue=False).pack(side="left")
+
+        self.dark_var = tk.BooleanVar(value=bool(self.settings.get("dark_mode", False)))
+        ttk.Checkbutton(bottom, text="Dark Theme", variable=self.dark_var,
+                        command=self._apply_theme, onvalue=True, offvalue=False).pack(side="left", padx=(12, 0))
+
         self.convert_btn = ttk.Button(bottom, text="Convert 0 selected",
                                       state="disabled", command=self.start_convert)
         self.convert_btn.pack(side="right")
@@ -206,8 +271,10 @@ class ConverterApp(ttk.Frame):
             initialdir=seed, mustexist=True)
         if not chosen:            # Cancel returns "" (empty str), never None
             return
-        self.folder_var.set(os.path.normpath(chosen))
-        self.settings["last_folder"] = os.path.normpath(chosen)
+        norm = os.path.normpath(chosen)
+        self.folder_var.set(norm)
+        self._add_recent_folder(norm)
+        self.settings["last_folder"] = norm
         save_settings(self.settings)
 
     # ------------------------------------------------------------- checkbox
@@ -279,6 +346,9 @@ class ConverterApp(ttk.Frame):
             )
             content.append(f"--- Character Folding Details ({len(report.lossy)} types): {changes_desc} ---\n")
 
+        if report.time_offset_ms != 0:
+            content.append(f"--- Timing Shift Applied: {report.time_offset_ms / 1000.0:+.2f} seconds ---\n")
+
         content.extend(report.preview)
         self.preview.insert("1.0", "\n".join(content))
         self.preview.configure(state="disabled")
@@ -293,6 +363,13 @@ class ConverterApp(ttk.Frame):
         else:
             self.refresh_convert_button()
 
+    def _get_time_offset_ms(self) -> int:
+        try:
+            val = float(self.offset_var.get().strip())
+            return int(round(val * 1000))
+        except ValueError:
+            return 0
+
     def start_scan(self) -> None:
         if self.worker and self.worker.is_alive():
             return
@@ -300,14 +377,16 @@ class ConverterApp(ttk.Frame):
         if not os.path.isdir(folder):
             messagebox.showerror(APP_NAME, "Pick an existing folder first.", parent=self.root)
             return
+        self._add_recent_folder(folder)
         self.tree.delete(*self.tree.get_children(""))
         self.checked.clear()
         self.reports.clear()
         self.cancel.clear()
         self._set_busy(True)
         self.status.configure(text="Scanning\u2026")
+        time_offset_ms = self._get_time_offset_ms()
         self._spawn(self._scan_worker,
-                    (folder, self.recurse_var.get(), Target(self.target_var.get())))
+                    (folder, self.recurse_var.get(), Target(self.target_var.get()), time_offset_ms))
 
     def start_convert(self) -> None:
         if self.worker and self.worker.is_alive():
@@ -406,11 +485,11 @@ class ConverterApp(ttk.Frame):
         self.refresh_convert_button()
 
     # ------------------------------------------------------------- core calls
-    def _scan_worker(self, folder: str, recurse: bool, target: Target) -> None:
+    def _scan_worker(self, folder: str, recurse: bool, target: Target, time_offset_ms: int) -> None:
         def on_progress(p) -> None:
             self.queue.put(("progress", (p.done, p.total, p.path.name)))
             self.queue.put(("row", p.report))
-        reports = scan(folder, recursive=recurse, target=target,
+        reports = scan(folder, recursive=recurse, target=target, time_offset_ms=time_offset_ms,
                        on_progress=on_progress, cancel=self.cancel)
         leftovers = count_temp_files(Path(folder), recursive=recurse)
         note = f"; {leftovers} leftover temp file(s) from an interrupted run" if leftovers else ""
@@ -443,9 +522,11 @@ class ConverterApp(ttk.Frame):
         if self.worker is not None:                        # 3. wait for it
             self.worker.join(timeout=5.0)
         self.settings.update(last_folder=self.folder_var.get().strip(),
+                             recent_folders=self.recent_folders,
                              recurse=self.recurse_var.get(),
                              target=self.target_var.get(),
-                             backup=self.backup_var.get())
+                             backup=self.backup_var.get(),
+                             dark_mode=self.dark_var.get())
         save_settings(self.settings)
         self.root.destroy()                                # 4. only now destroy
 
@@ -454,7 +535,7 @@ def main() -> None:
     enable_dpi_awareness()          # BEFORE Tk()
     root = tk.Tk()
     root.title(APP_NAME)
-    root.minsize(760, 560)
+    root.minsize(800, 580)
 
     def report_exception(exc, val, tb):
         import traceback
@@ -462,7 +543,8 @@ def main() -> None:
                              "".join(traceback.format_exception(exc, val, tb))[-1500:])
     root.report_callback_exception = report_exception
 
-    ConverterApp(root)
+    initial_folder = sys.argv[1] if len(sys.argv) > 1 else ""
+    ConverterApp(root, initial_folder=initial_folder)
     root.mainloop()
 
 

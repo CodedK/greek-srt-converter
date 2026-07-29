@@ -33,6 +33,18 @@ def _prompt_target() -> Target:
         print("Invalid choice. Enter 1 or 2.")
 
 
+def _prompt_time_offset() -> int:
+    while True:
+        ans = input("Apply time shift in seconds (e.g. +2.0 or -1.5) [default: 0.0]: ").strip()
+        if not ans:
+            return 0
+        try:
+            val = float(ans)
+            return int(round(val * 1000))
+        except ValueError:
+            print("Invalid input. Enter a number (e.g. +2.0 or -1.5).")
+
+
 def _prompt_folder() -> str | None:
     while True:
         inp = input("\nEnter folder path (or 'q' to quit): ").strip().strip("\"'")
@@ -113,6 +125,7 @@ def run_once() -> bool:
     print("=" * 60)
 
     target = _prompt_target()
+    time_offset_ms = _prompt_time_offset()
     folder = _prompt_folder()
     if folder is None:
         return False
@@ -126,7 +139,7 @@ def run_once() -> bool:
     def on_scan_progress(p: Progress) -> None:
         print(f"\r[{p.done}/{p.total}] Scanning {p.path.name}", end="", flush=True)
 
-    reports = scan(folder, recursive=recursive, target=target, on_progress=on_scan_progress)
+    reports = scan(folder, recursive=recursive, target=target, time_offset_ms=time_offset_ms, on_progress=on_scan_progress)
     print()  # Newline after progress
 
     if not reports:

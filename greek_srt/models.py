@@ -114,6 +114,9 @@ class FileReport:
     error: str | None
     """Reason the file is UNREADABLE; None for every other action."""
 
+    time_offset_ms: int = 0
+    """Time offset in milliseconds applied during rendering."""
+
     @property
     def size(self) -> int:
         return self.stamp.size
@@ -159,3 +162,6 @@ class ConvertResult:
 
     error: str | None
     """Human-readable failure reason; None iff ok is True."""
+
+    time_offset_ms: int = 0
+    """Time offset in milliseconds applied during rendering."""
