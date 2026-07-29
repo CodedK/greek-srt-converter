@@ -18,6 +18,18 @@ REG_KEY_PATH = r"Software\Classes\Directory\shell\GreekSrtConverter"
 MENU_LABEL = "Convert Greek SRT Subtitles here"
 
 
+def is_installed() -> bool:
+    """Check if the Explorer context menu registry key exists."""
+    if sys.platform != "win32":
+        return False
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_KEY_PATH)
+        winreg.CloseKey(key)
+        return True
+    except OSError:
+        return False
+
+
 def install() -> bool:
     if sys.platform != "win32":
         print("Context menu integration is supported on Windows only.")

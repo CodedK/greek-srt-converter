@@ -15,6 +15,7 @@ from tkinter import font as tkfont
 
 from greek_srt import Action, FileReport, Target, convert, scan
 from greek_srt.fileio import count_temp_files
+import setup_context_menu
 
 APP_NAME = "Greek SRT Converter"
 CHECKED = "\u2611"      # BALLOT BOX WITH CHECK
@@ -247,6 +248,28 @@ class ConverterApp(ttk.Frame):
         ttk.Checkbutton(bottom, text="Dark Theme", variable=self.dark_var,
                         command=self._apply_theme, onvalue=True, offvalue=False).pack(side="left", padx=(12, 0))
 
+        if sys.platform == "win32":
+            ttk.Button(bottom, text="Explorer Menu", command=self._toggle_context_menu).pack(side="left", padx=(12, 0))
+
+        # Menubar
+        menubar = tk.Menu(self.root)
+        self.root.config(menu=menubar)
+        options_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Options", menu=options_menu)
+        options_menu.add_checkbutton(label="Dark Theme", variable=self.dark_var, command=self._apply_theme)
+        options_menu.add_checkbutton(label="Backup Originals", variable=self.backup_var)
+        options_menu.add_checkbutton(label="Recurse Subfolders", variable=self.recurse_var)
+
+        if sys.platform == "win32":
+            tools_menu = tk.Menu(menubar, tearoff=0)
+            menubar.add_cascade(label="Tools", menu=tools_menu)
+            self.menu_reg_var = tk.BooleanVar(value=setup_context_menu.is_installed())
+            tools_menu.add_checkbutton(
+                label="Register Explorer Right-Click Menu",
+                variable=self.menu_reg_var,
+                command=self._toggle_context_menu,
+            )
+
         self.convert_btn = ttk.Button(bottom, text="Convert 0 selected",
                                       state="disabled", command=self.start_convert)
         self.convert_btn.pack(side="right")
@@ -276,6 +299,41 @@ class ConverterApp(ttk.Frame):
         self._add_recent_folder(norm)
         self.settings["last_folder"] = norm
         save_settings(self.settings)
+
+    def _toggle_context_menu(self) -> None:
+        if sys.platform != "win32":
+            messagebox.showinfo(APP_NAME, "Context menu integration is supported on Windows only.", parent=self.root)
+            return
+
+        currently_installed = setup_context_menu.is_installed()
+        if not currently_installed:
+            ok = setup_context_menu.install()
+            if ok:
+                if hasattr(self, "menu_reg_var"):
+                    self.menu_reg_var.set(True)
+                messagebox.showinfo(
+                    APP_NAME,
+                    "Successfully registered Explorer Right-Click Menu:\n\n'Convert Greek SRT Subtitles here'",
+                    parent=self.root,
+                )
+            else:
+                if hasattr(self, "menu_reg_var"):
+                    self.menu_reg_var.set(False)
+                messagebox.showerror(APP_NAME, "Failed to register Explorer context menu.", parent=self.root)
+        else:
+            ok = setup_context_menu.uninstall()
+            if ok:
+                if hasattr(self, "menu_reg_var"):
+                    self.menu_reg_var.set(False)
+                messagebox.showinfo(
+                    APP_NAME,
+                    "Successfully removed Explorer Right-Click Menu registration.",
+                    parent=self.root,
+                )
+            else:
+                if hasattr(self, "menu_reg_var"):
+                    self.menu_reg_var.set(True)
+                messagebox.showerror(APP_NAME, "Failed to remove Explorer context menu registration.", parent=self.root)
 
     # ------------------------------------------------------------- checkbox
     def _toggleable(self, iid: str) -> bool:
