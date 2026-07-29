@@ -7,6 +7,7 @@ $RECYCLE.BIN/
 __pycache__/
 *.py[cod]
 *.egg-info/
+*.spec
 build/
 dist/
 .venv/
