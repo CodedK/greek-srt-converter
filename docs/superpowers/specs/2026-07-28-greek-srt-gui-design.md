@@ -495,8 +495,8 @@ class Rendered(NamedTuple):
 
 def split_lines_keep(text: str) -> list[tuple[str, str]]: ...
 def split_lines(text: str) -> list[str]: ...
-def fold_to_iso(line: str) -> tuple[str, dict[str, int], dict[str, int]]: ...
-def fold_document(text: str) -> tuple[str, dict[str, int], dict[str, int]]: ...
+def fold_to_iso(line: str) -> tuple[str, dict[str, tuple[str, int]], dict[str, int]]: ...
+def fold_document(text: str) -> tuple[str, dict[str, tuple[str, int]], dict[str, int]]: ...
 def render(text: str, target: Target) -> Rendered: ...
 ```
 
@@ -1319,12 +1319,13 @@ class Rendered(NamedTuple):
     loss_ratio: float
 
 
-def fold_to_iso(text: str) -> tuple[str, dict[str, int], dict[str, int]]:
+def fold_to_iso(text: str) -> tuple[str, dict[str, tuple[str, int]], dict[str, int]]:
     """Fold one TEXT line. Total: the result always encodes to iso-8859-7.
 
-    Returns (folded, replaced_counts, dropped_counts).
+    Returns (folded, replaced_map, dropped_counts) where replaced_map is
+    char -> (substitution, count).
     """
-    replaced: dict[str, int] = {}
+    replaced: dict[str, tuple[str, int]] = {}
     dropped: dict[str, int] = {}
     out: list[str] = []
     for ch in text:
@@ -1335,7 +1336,8 @@ def fold_to_iso(text: str) -> tuple[str, dict[str, int], dict[str, int]]:
             continue
         sub = ISO_FOLD_MAP.get(ch)
         if sub is not None:
-            replaced[ch] = replaced.get(ch, 0) + 1
+            prev_sub, prev_n = replaced.get(ch, (sub, 0))
+            replaced[ch] = (sub, prev_n + 1)
             out.append(sub)
             continue
         try:
@@ -1352,14 +1354,15 @@ def fold_to_iso(text: str) -> tuple[str, dict[str, int], dict[str, int]]:
         except UnicodeEncodeError:
             stripped = ""
         if stripped:
-            replaced[ch] = replaced.get(ch, 0) + 1
+            prev_sub, prev_n = replaced.get(ch, (stripped, 0))
+            replaced[ch] = (stripped, prev_n + 1)
             out.append(stripped)
         else:
             dropped[ch] = dropped.get(ch, 0) + 1
     return "".join(out), replaced, dropped
 
 
-def fold_document(text: str) -> tuple[str, dict[str, int], dict[str, int]]:
+def fold_document(text: str) -> tuple[str, dict[str, tuple[str, int]], dict[str, int]]:
     """Fold a whole document, leaving structural lines verbatim.
 
     Line terminators are preserved EXACTLY, including mixed and CR-only files.
@@ -1368,15 +1371,16 @@ def fold_document(text: str) -> tuple[str, dict[str, int], dict[str, int]]:
     parts = split_lines_keep(text)
     before = [i for i, (c, _) in enumerate(parts) if TIMECODE_RE.match(c)]
     out: list[tuple[str, str]] = []
-    replaced: dict[str, int] = {}
+    replaced: dict[str, tuple[str, int]] = {}
     dropped: dict[str, int] = {}
     for content, term in parts:
         if TIMECODE_RE.match(content) or INDEX_RE.match(content):
             out.append((content, term))     # structural: verbatim, never folded
             continue
         folded, r, d = fold_to_iso(content)
-        for k, v in r.items():
-            replaced[k] = replaced.get(k, 0) + v
+        for k, (sub, v) in r.items():
+            prev_sub, prev_n = replaced.get(k, (sub, 0))
+            replaced[k] = (sub, prev_n + v)
         for k, v in d.items():
             dropped[k] = dropped.get(k, 0) + v
         out.append((folded, term))
@@ -1390,9 +1394,9 @@ def fold_document(text: str) -> tuple[str, dict[str, int], dict[str, int]]:
     return "".join(c + t for c, t in out), replaced, dropped
 
 
-def _to_lossy(replaced: dict[str, int], dropped: dict[str, int]
+def _to_lossy(replaced: dict[str, tuple[str, int]], dropped: dict[str, int]
               ) -> tuple[LossyChange, ...]:
-    items = [LossyChange(ch, ISO_FOLD_MAP.get(ch, ""), n) for ch, n in replaced.items()]
+    items = [LossyChange(ch, sub, n) for ch, (sub, n) in replaced.items()]
     items += [LossyChange(ch, "", n) for ch, n in dropped.items()]
     items.sort(key=lambda c: (-c.count, ord(c.char)))
     return tuple(items)
@@ -1550,7 +1554,15 @@ def iter_srt_files(folder: Path, *, recursive: bool) -> list[Path]:
         if p.suffix.lower() == ".srt" and not is_excluded(p.name) and p.is_file()
     ]
     # Return PLAIN paths: the \\?\ prefix must never reach the UI or a report.
-    plain = [Path(os.path.abspath(str(p)).removeprefix(_EXT_PREFIX)) for p in found]
+    plain: list[Path] = []
+    for p in found:
+        s = os.path.abspath(str(p))
+        if s.startswith("\\\\?\\UNC\\"):
+            plain.append(Path("\\\\" + s[8:]))
+        elif s.startswith(_EXT_PREFIX):
+            plain.append(Path(s[len(_EXT_PREFIX):]))
+        else:
+            plain.append(Path(s))
     return sorted(plain, key=lambda p: str(p).casefold())
 
 
@@ -2277,7 +2289,7 @@ def _pump(self) -> None:
             self._handle(kind, payload)
     except queue.Empty:
         pass
-    if self.worker is not None and self.worker.is_alive():
+    if (self.worker is not None and self.worker.is_alive()) or not self.queue.empty():
         self._schedule_pump()                    # self-terminating
 ```
 
@@ -2731,7 +2743,7 @@ class ConverterApp(ttk.Frame):
                 self._handle(kind, payload)
         except queue.Empty:
             pass
-        if self.worker is not None and self.worker.is_alive():
+        if (self.worker is not None and self.worker.is_alive()) or not self.queue.empty():
             self._schedule_pump()
 
     def _handle(self, kind: str, payload) -> None:

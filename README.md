@@ -1,56 +1,73 @@
 # greek-srt-converter
 
-Batch re-encodes `.srt` subtitle files. Point it at a folder, and it auto-detects each
-file's encoding and rewrites it as **UTF-8** or **ISO-8859-7** (Greek) — the encoding
-older hardware media players and TVs expect for Greek subtitles.
+Batch re-encodes `.srt` subtitle files. Point it at a folder, and it auto-detects each file's encoding and rewrites it as **UTF-8** or **ISO-8859-7** (Greek) — the encoding older hardware media players and TVs expect for Greek subtitles.
 
-## Why
+---
 
-Greek subtitles downloaded from the web arrive in a mix of encodings: UTF-8, CP1253,
-ISO-8859-7, sometimes UTF-16. Standalone media players that only understand ISO-8859-7
-render anything else as mojibake. This tool normalises a whole folder in one pass.
+## Quick Start
 
-## Usage
+Requires Python 3.10+ (Standard Library only, zero runtime dependencies).
 
-Requires Python 3.8+. No third-party dependencies.
-
+### Graphical Interface (GUI)
 ```bash
-python "CONVERT TO GREEK THEN UTF8.py"
+python gui.py
 ```
 
-The script is interactive and prompts for:
+### Command Line Interface (CLI)
+```bash
+python cli.py
+```
 
-| Prompt | Meaning |
-| --- | --- |
-| Conversion mode | `1` = auto-detect → UTF-8, `2` = auto-detect → UTF-8 → ISO-8859-7 |
-| Folder path | Folder to scan for `.srt` files |
-| Recursive | Also process subfolders |
-| Backup | Copy each original to `__orig__<name>.srt` before writing |
-| Dry run | List what would be converted, change nothing |
+---
 
-Conversion is **in place**. Keep backups enabled unless you have your own copies.
+## Features & Highlights
 
-### Encoding detection
+- **Dual Interfaces**: Modern, DPI-aware Tkinter GUI ([`gui.py`](file:///c:/Users/CodedK/Desktop/Git/Subtitles/gui.py)) and interactive CLI ([`cli.py`](file:///c:/Users/CodedK/Desktop/Git/Subtitles/cli.py)).
+- **Scan/Preview Phase**: Complete preview of actions (`CONVERT`, `ALREADY_TARGET`, `NEEDS_REVIEW`, `UNREADABLE`) and lossy character replacements before any bytes are written to disk.
+- **Accurate Encoding Detection**: Heuristic scoring engine over complete file buffers distinguishing CP1253, ISO-8859-7, UTF-8 (BOM/BOM-less), UTF-16, UTF-32, CP1252, and ASCII.
+- **Safe ISO-8859-7 Folding**: Map non-encodable characters (smart quotes, dialogue dashes, currency symbols, ligatures) safely without altering SubRip timecodes or cue structure.
+- **`NEEDS_REVIEW` Safety Guard**: Automatically flags non-Greek subtitles (e.g. CJK or foreign language subtitles) when targeting ISO-8859-7 if character loss exceeds 20%.
+- **Atomic File Operations**: Writes to temporary `.srtconv-*.tmp` files with `fsync()` before replacement (`os.replace`). Original files are never truncated or lost.
+- **Line Ending Preservation**: Preserves original CRLF, LF, or CR line endings without forced universal newline translations.
+- **No BOM Policy**: Never outputs Byte Order Marks (`EF BB BF`), ensuring compatibility with strict subtitle parsers.
+- **Safe Backups**: Preserves pristine original files as `__orig__<name>.srt` without overwriting existing backups on subsequent runs.
 
-Candidate encodings are tried in order — UTF-8, ISO-8859-7, Windows-1252, CP1253,
-Latin-1, UTF-16, ASCII — and the first that decodes the file's opening bytes wins.
-This is a heuristic, not a guarantee: several single-byte encodings will decode almost
-any byte sequence without error, so a file can be "successfully" decoded as the wrong
-one. Use dry-run mode and spot-check the output on an unfamiliar batch.
+---
 
-## Status
+## Documentation & Developer Resources
 
-Working CLI, with known defects documented below. A folder-picker GUI and a corrected
-`greek_srt` core package are specified in full in
-[the implementation brief](docs/superpowers/specs/2026-07-28-greek-srt-gui-design.md).
+- **[RUNBOOK.md](RUNBOOK.md)**: Operational guide for running, testing, troubleshooting, and packaging the application.
+- **[CLAUDE.md](CLAUDE.md)**: Architecture rules, developer invariants, and code guidelines.
+- **[Implementation Brief](docs/superpowers/specs/2026-07-28-greek-srt-gui-design.md)**: Complete design brief and technical specifications.
 
-Known defects in the current script, all fixed by that brief:
+---
 
-- `clean_for_iso_8859_7()` is never called, so the ISO-8859-7 mode silently falls back to UTF-8
-- encoding detection validates only a buffered prefix, and `iso-8859-7` acts as a catch-all that
-  prevents CP1253 from ever being returned
-- writes truncate the target before writing, so an interruption destroys the subtitle
-- `__orig__*.srt` backups match the `*.srt` glob, so a second run converts its own backups
+## Developer Setup & Testing
+
+Install development dependencies:
+```bash
+pip install -r requirements-dev.txt
+```
+
+Run the complete test suite:
+```bash
+python -m pytest -q
+```
+
+---
+
+## Building Standalone Executable (.exe)
+
+To bundle `gui.py` into a single standalone Windows executable using PyInstaller:
+
+```bash
+pip install pyinstaller
+python build_exe.py
+```
+
+The resulting executable will be placed in `dist/GreekSrtConverter/`.
+
+---
 
 ## License
 
