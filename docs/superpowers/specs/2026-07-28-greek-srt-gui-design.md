@@ -63,16 +63,42 @@ The scan/convert split is the whole point of the architecture. It gives the user
 of exactly what will happen — including which characters will be lost — before a single byte is
 written, and it gives the CLI a working dry-run for free.
 
-### 1.3 Two directions, chosen per run
+### 1.3 Three targets, chosen per run
 
 | Target | Codec | Why a user picks it |
 |---|---|---|
 | **UTF-8** | `utf-8` (never `utf-8-sig` — no BOM is ever written) | Modern players, VLC, phones, Plex |
-| **Greek ISO-8859-7** | `iso-8859-7` | Old standalone DVD players, hardware media boxes, TVs |
+| **Greek ISO-8859-7** | `iso-8859-7` | Hardware players following the DVB Greek standard |
+| **Greek Windows (CP1253)** | `cp1253` | What Greek subtitle files in the wild actually are |
 
-ISO-8859-7 is a single-byte encoding that can only represent Greek, ASCII and a small punctuation
-set. Converting *to* it is inherently lossy for anything else, which is why the loss guard in §5.5
-is mandatory.
+Both Greek targets are single-byte encodings that can only represent Greek, ASCII and a small
+punctuation set. Converting *to* either is inherently lossy for anything else, which is why the loss
+guard in §5.5 is mandatory.
+
+**Why CP1253 is a target and not an implementation detail.** The two Greek codecs are byte-identical
+across the whole Greek alphabet, so for most text the choice is invisible. They disagree on exactly
+8 bytes outside the C1 range, and two of those are real Greek letters:
+
+| byte | CP1253 | ISO-8859-7 |
+|---|---|---|
+| `0xA1` | `΅` | `‘` |
+| `0xA2` | **`Ά`** | `’` |
+| `0xA4` | `¤` | `€` |
+| `0xA5` | `¥` | `₯` |
+| `0xAA` | *undefined* | `ͺ` |
+| `0xAE` | `®` | *undefined* |
+| `0xB5` | `µ` | **`΅`** |
+| `0xB6` | `¶` | **`Ά`** |
+
+`Ά` therefore has **no byte that renders correctly under both**. Writing ISO-8859-7 to a
+CP1253-configured device shows `¶` where `Ά` belongs; writing CP1253 to an ISO-8859-7 device shows
+`’`. Measured on a real 26-file library, byte `0xA2` occurs **284 times across 25 of 26 files** — so
+this is the common case, not an edge case, and picking the wrong Greek codec is visibly wrong on
+nearly every file. CP1253 additionally carries `… ’ “ ”` in the C1 range `0x80–0x9F`, which
+ISO-8859-7 cannot represent at all.
+
+The user's device decides which is correct, and no amount of analysis can determine it from the
+files alone. Offer all three; do not try to be clever.
 
 ### 1.4 Delivery, now and later
 
@@ -308,6 +334,7 @@ class Target(enum.Enum):
 
     UTF_8 = "utf-8"
     ISO_8859_7 = "iso-8859-7"
+    CP_1253 = "cp1253"
 
     @property
     def codec(self) -> str:
@@ -315,9 +342,18 @@ class Target(enum.Enum):
         return self.value
 
     @property
+    def is_greek_8bit(self) -> bool:
+        """True for the two single-byte Greek codecs, which share the folding pipeline."""
+        return self in (Target.ISO_8859_7, Target.CP_1253)
+
+    @property
     def label(self) -> str:
         """Human-facing name for the GUI radio button and the CLI menu."""
-        return "UTF-8" if self is Target.UTF_8 else "Greek ISO-8859-7"
+        return {
+            Target.UTF_8: "UTF-8",
+            Target.ISO_8859_7: "Greek ISO-8859-7",
+            Target.CP_1253: "Greek Windows (CP1253)",
+        }[self]
 
 
 class Action(enum.Enum):
@@ -495,8 +531,8 @@ class Rendered(NamedTuple):
 
 def split_lines_keep(text: str) -> list[tuple[str, str]]: ...
 def split_lines(text: str) -> list[str]: ...
-def fold_to_iso(line: str) -> tuple[str, dict[str, tuple[str, int]], dict[str, int]]: ...
-def fold_document(text: str) -> tuple[str, dict[str, tuple[str, int]], dict[str, int]]: ...
+def fold_for_codec(line: str, codec: str) -> tuple[str, dict[str, tuple[str, int]], dict[str, int]]: ...
+def fold_document(text: str, codec: str) -> tuple[str, dict[str, tuple[str, int]], dict[str, int]]: ...
 def render(text: str, target: Target) -> Rendered: ...
 ```
 
@@ -1024,7 +1060,7 @@ no-op.
 
 #### NEEDS_REVIEW
 
-Applies **only** when `target is Target.ISO_8859_7`. Compute
+Applies **only** when `target.is_greek_8bit` — that is, to `ISO_8859_7` **and** `CP_1253`. Compute
 
 ```
 loss_ratio = (non-ASCII characters dropped by folding) / (total non-ASCII characters)
@@ -1136,14 +1172,28 @@ The existing 23-entry table at lines 53–84 is wrong in three ways.
 | `£` U+00A3 | `0xA3` | `GBP` | **REMOVED** |
 | `±` U+00B1 | `0xB1` | `+/-` | **REMOVED** |
 | NBSP U+00A0 | `0xA0` | space | **KEPT as a deliberate R4 exception** (invisible) |
-| `'` U+2018 | `0xA1` | `'` | **KEPT under R5** — see below |
-| `'` U+2019 | `0xA2` | `'` | **KEPT under R5** |
-| `€` U+20AC | `0xA4` | `EUR` | **KEPT under R5** |
+| `'` U+2018 | `0xA1` | `'` | **REMOVED** — R5 withdrawn, see below |
+| `'` U+2019 | `0xA2` | `'` | **REMOVED** — R5 withdrawn |
+| `€` U+20AC | `0xA4` | `EUR` | **REMOVED** — R5 withdrawn |
 
-The R5 four are subtle and easy to get wrong in either direction. They *are* encodable, but bytes
-A1/A2/A4 are exactly where ISO-8859-7 and CP1253 disagree: a CP1253-configured player renders them as
-`΅`, `Ά`, `¤`. Since the ISO-8859-7 target exists **for old players**, and Greek TVs are commonly
-CP1253-configured, folding these to ASCII is the safer rendering — and it costs no Greek.
+**R5 is withdrawn (2026-07-28).** It originally folded U+2018/U+2019/U+20AC despite ISO-8859-7
+encoding them fine, on the reasoning that bytes A1/A2/A4 are where the two Greek codecs disagree, so
+a CP1253-configured player would show `΅ Ά ¤`. That was a *hedge against not having a CP1253 target*.
+CP1253 is now a first-class target (§1.3), so the user states which codec their device speaks and the
+hedge becomes pure data loss. Fold **only what the chosen codec cannot encode.**
+
+This makes the fold table per-codec, and the two differ substantially — CP1253 is markedly richer in
+punctuation. Measured:
+
+| char | `iso-8859-7` | `cp1253` |
+|---|---|---|
+| `“ ” – — … • ™ ‹ › „ †` | **cannot encode** | `0x93 0x94 0x96 0x97 0x85 0x95 0x99 0x8B 0x9B 0x84 0x86` |
+| `₯` drachma | `0xA5` | **cannot encode** |
+| `‘ ’ € ― © « » NBSP` | `A1 A2 A4 AF A9 AB BB A0` | `91 92 80 AF A9 AB BB A0` |
+
+So a CP1253 run folds almost nothing, while an ISO-8859-7 run still folds the whole smart-punctuation
+set. Build `ISO_FOLD_MAP` as specified, then derive `CP1253_FOLD_MAP` from it by **dropping every
+entry whose key satisfies `key.encode("cp1253")`** — do not hand-maintain a second table.
 
 Also natively encodable and correctly absent from the table: `« »` (AB/BB), `·` (B7), `΄ ΅` (B4/B5),
 `§ ¨ ¬ ° ² ³ ½ ¦`.
@@ -1303,7 +1353,7 @@ ISO_FOLD_MAP: dict[str, str] = {
     "\u00de": "Th", "\u00fe": "th", "\u0110": "D", "\u0111": "d",
 }
 # Accented Latin letters (e u n a c ...) are NOT listed. They are handled
-# generically by the NFKD fallback in fold_to_iso, which strips combining
+# generically by the NFKD fallback in fold_for_codec, which strips combining
 # marks: "cafe-acute" -> "cafe".
 
 _KEEP_CONTROLS = frozenset({0x09, 0x0A, 0x0D})
@@ -1319,38 +1369,74 @@ class Rendered(NamedTuple):
     loss_ratio: float
 
 
-def fold_to_iso(text: str) -> tuple[str, dict[str, tuple[str, int]], dict[str, int]]:
-    """Fold one TEXT line. Total: the result always encodes to iso-8859-7.
+# Folded even though BOTH Greek codecs can encode them. Exactly one entry: NBSP
+# is invisible on screen, so leaving it verbatim hides a layout problem from the
+# user and from the preview pane. R5's three entries (U+2018 U+2019 U+20AC) were
+# removed from this set when CP1253 became a target -- see section 6.2.
+ALWAYS_FOLD = frozenset(" ")
 
-    Returns (folded, replaced_map, dropped_counts) where replaced_map is
-    char -> (substitution, count).
+# Derived, never hand-maintained: drop every ISO entry `codec` encodes natively,
+# except the ALWAYS_FOLD entries, which survive into every map.
+def _derive(codec: str) -> dict[str, str]:
+    keep: dict[str, str] = {}
+    for key, sub in ISO_FOLD_MAP.items():
+        if key in ALWAYS_FOLD:
+            keep[key] = sub
+            continue
+        try:
+            key.encode(codec)
+        except UnicodeEncodeError:
+            keep[key] = sub
+    return keep
+
+
+FOLD_MAPS = {
+    "iso-8859-7": ISO_FOLD_MAP,
+    "cp1253": _derive("cp1253"),
+}
+
+
+def fold_for_codec(text: str, codec: str) -> tuple[str, dict[str, tuple[str, int]], dict[str, int]]:
+    """Fold one TEXT line. Total: the result always encodes to `codec`.
+
+    `codec` is "iso-8859-7" or "cp1253". Returns (folded, replaced_map,
+    dropped_counts) where replaced_map is char -> (substitution, count).
     """
+    fold_map = FOLD_MAPS[codec]
     replaced: dict[str, tuple[str, int]] = {}
     dropped: dict[str, int] = {}
     out: list[str] = []
     for ch in text:
         cp = ord(ch)
-        # R6: controls are all ISO-8859-7-encodable, so they need this rule.
+        # R6: C0/C1 controls are encodable in BOTH Greek codecs, so they need
+        # this explicit rule -- "drop what cannot be encoded" would keep them.
         if (cp < 0x20 or cp == 0x7F or 0x80 <= cp <= 0x9F) and cp not in _KEEP_CONTROLS:
             dropped[ch] = dropped.get(ch, 0) + 1
             continue
-        sub = ISO_FOLD_MAP.get(ch)
+        sub = fold_map.get(ch)
+        # ALWAYS_FOLD is checked BEFORE encodability, or NBSP would survive.
+        if sub is not None and ch in ALWAYS_FOLD:
+            prev_sub, prev_n = replaced.get(ch, (sub, 0))
+            replaced[ch] = (sub, prev_n + 1)
+            out.append(sub)
+            continue
+        # Otherwise native encodability wins: never fold what this codec has.
+        try:
+            ch.encode(codec)
+            out.append(ch)
+            continue
+        except UnicodeEncodeError:
+            pass
         if sub is not None:
             prev_sub, prev_n = replaced.get(ch, (sub, 0))
             replaced[ch] = (sub, prev_n + 1)
             out.append(sub)
             continue
-        try:
-            ch.encode("iso-8859-7")
-            out.append(ch)
-            continue
-        except UnicodeEncodeError:
-            pass
         # Generic fallback: strip combining marks.
         stripped = "".join(c for c in unicodedata.normalize("NFKD", ch)
                            if not unicodedata.combining(c))
         try:
-            stripped.encode("iso-8859-7")
+            stripped.encode(codec)
         except UnicodeEncodeError:
             stripped = ""
         if stripped:
@@ -1362,9 +1448,10 @@ def fold_to_iso(text: str) -> tuple[str, dict[str, tuple[str, int]], dict[str, i
     return "".join(out), replaced, dropped
 
 
-def fold_document(text: str) -> tuple[str, dict[str, tuple[str, int]], dict[str, int]]:
+def fold_document(text: str, codec: str) -> tuple[str, dict[str, tuple[str, int]], dict[str, int]]:
     """Fold a whole document, leaving structural lines verbatim.
 
+    `codec` is "iso-8859-7" or "cp1253".
     Line terminators are preserved EXACTLY, including mixed and CR-only files.
     Raises StructureChanged if the cue skeleton moved or a '-->' was forged.
     """
@@ -1377,7 +1464,7 @@ def fold_document(text: str) -> tuple[str, dict[str, tuple[str, int]], dict[str,
         if TIMECODE_RE.match(content) or INDEX_RE.match(content):
             out.append((content, term))     # structural: verbatim, never folded
             continue
-        folded, r, d = fold_to_iso(content)
+        folded, r, d = fold_for_codec(content, codec)
         for k, (sub, v) in r.items():
             prev_sub, prev_n = replaced.get(k, (sub, 0))
             replaced[k] = (sub, prev_n + v)
@@ -1406,10 +1493,14 @@ def render(text: str, target: Target) -> Rendered:
     """The EXACT bytes convert() will write. Pure; the single source of truth.
 
     Preconditions: `text` has already had every U+FEFF removed by the caller.
-    Postcondition for ISO_8859_7: the encode cannot raise (fuzz-verified).
+    Postcondition for either Greek 8-bit target: the encode cannot raise (fuzz-verified).
     """
-    if target is Target.ISO_8859_7:
-        folded, replaced, dropped = fold_document(text)
+    if target.is_greek_8bit:
+        # Target-aware: fold ONLY what this codec cannot encode. CP1253 natively
+        # carries the ellipsis and both curly quote pairs at 0x85/0x92-0x94, which
+        # ISO-8859-7 cannot represent -- folding them for CP1253 would be needless
+        # damage of exactly the kind catalogued in R5 of section 6.2.
+        folded, replaced, dropped = fold_document(text, target.codec)
     else:
         folded, replaced, dropped = text, {}, {}
     lossy = _to_lossy(replaced, dropped)
@@ -1422,7 +1513,7 @@ def render(text: str, target: Target) -> Rendered:
 **Note on `_to_lossy` for the NFKD path.** A character folded by NFKD (e.g. `é` → `e`) is recorded in
 `replaced` but has no `ISO_FOLD_MAP` entry, so `LossyChange.replacement` comes back `""` and it would
 read as "dropped". That is wrong. **Fix it by recording the substitution at fold time**: change
-`fold_to_iso` to accumulate `replaced` as `dict[str, tuple[str, int]]` mapping char → (substitution,
+`fold_for_codec` to accumulate `replaced` as `dict[str, tuple[str, int]]` mapping char → (substitution,
 count), and have `fold_document` merge on count. Do this; the signature change is confined to
 `clean.py`. The public `render()` contract is unchanged.
 
@@ -1877,7 +1968,7 @@ def scan_one(path: Path, target: Target) -> FileReport:
 
     if rendered.data == raw:
         action = Action.ALREADY_TARGET
-    elif target is Target.ISO_8859_7 and rendered.loss_ratio > LOSS_GUARD:
+    elif target.is_greek_8bit and rendered.loss_ratio > LOSS_GUARD:
         action = Action.NEEDS_REVIEW
     else:
         action = Action.CONVERT
@@ -2040,6 +2131,7 @@ tk.Tk (root)
     │   ├── ttk.Label "Mode:"                      pack(left)
     │   ├── ttk.Radiobutton "UTF-8"       value="utf-8"       pack(left)
     │   ├── ttk.Radiobutton "Greek ISO-8859-7" value="iso-8859-7" pack(left)
+│   ├── ttk.Radiobutton "Greek Windows (CP1253)" value="cp1253" pack(left)
     │   └── ttk.Button "Scan"                      pack(right)
     ├── mid: ttk.Frame                             pack(fill=both, expand=True)
     │   ├── ttk.Treeview cols=(sel,file,encoding,status) show="headings"
@@ -2530,6 +2622,8 @@ class ConverterApp(ttk.Frame):
                         value="utf-8").pack(side="left", padx=(8, 0))
         ttk.Radiobutton(mode, text="Greek ISO-8859-7", variable=self.target_var,
                         value="iso-8859-7").pack(side="left", padx=(10, 0))
+ttk.Radiobutton(mode, text="Greek Windows (CP1253)", variable=self.target_var,
+                value="cp1253").pack(side="left", padx=(10, 0))
         self.scan_btn = ttk.Button(mode, text="Scan", command=self.start_scan)
         self.scan_btn.pack(side="right")
 
@@ -2905,7 +2999,7 @@ Behaviour, prompt by prompt:
    `Detects: UTF-8 (BOM/BOM-less), UTF-16, UTF-32, CP1253, ISO-8859-7, CP1252, ASCII`.
    The old banner's encoding list was wrong (it advertised `latin1`, which is now deliberately absent)
    and must be corrected.
-2. **Conversion mode.** `1` → `Target.UTF_8`, `2` → `Target.ISO_8859_7`. Re-prompt on anything else.
+2. **Conversion mode.** `1` → `Target.UTF_8`, `2` → `Target.ISO_8859_7`, `3` → `Target.CP_1253`. Re-prompt on anything else.
    The old warning *"Characters not supported by ISO-8859-7 will cause fallback to UTF-8"* is
    **deleted** — it is now false. Replace with:
    `Note: characters ISO-8859-7 cannot represent are folded or dropped; the scan table shows exactly which.`
@@ -2995,10 +3089,10 @@ Run: `python -m pytest -q`
 | `test_table_R4_no_needless_folding` | for every key except U+00A0/U+00AD, not (`encode(iso) == encode(cp1253)`) |
 | `test_table_R5_keeps_alpha_tonos` | `\u0386` and `\u0385` are **not** in the table; `\u2018 \u2019 \u20ac \u20af \u037a` **are** |
 | `test_table_keeps_native_chars` | `\u2015 \u00b7 \u00ab \u00bb \u00a9 \u00a3 \u00b1 \u00bd` are not in the table |
-| `test_forge_search_3char` | over `list(ISO_FOLD_MAP) + list("-<>. a")`, every 3-char input whose fold contains `-->` must have contained it already. **Expected: 120 raw hits at `fold_to_iso` level, all of the class "two dash-producing chars + literal `>`". Assert `fold_document` raises `StructureChanged` for each.** |
-| `test_structural_inertness` | `fold_to_iso(s) == s` with empty maps for `"1"`, `"0001"`, `"999999"`, `"00:01:12,400 --> 00:01:14,900"`, `"00:00:01,000 --> 00:00:03,500 X1:100 X2:600 Y1:20 Y2:50"`, `"01:02:03.456 --> 01:02:05.000"` |
-| `test_totality_fuzz` | 6 × 8000 random codepoints in `U+0020..U+11000` (surrogates excluded); `fold_to_iso(s).encode("iso-8859-7")` never raises |
-| `test_idempotence` | `fold_to_iso(fold_to_iso(x)[0])` returns `x` unchanged with empty maps |
+| `test_forge_search_3char` | over `list(ISO_FOLD_MAP) + list("-<>. a")`, every 3-char input whose fold contains `-->` must have contained it already. **Expected: 120 raw hits at `fold_for_codec` level, all of the class "two dash-producing chars + literal `>`". Assert `fold_document` raises `StructureChanged` for each.** |
+| `test_structural_inertness` | `fold_for_codec(s, c) == s` with empty maps, both Greek codecs, for `"1"`, `"0001"`, `"999999"`, `"00:01:12,400 --> 00:01:14,900"`, `"00:00:01,000 --> 00:00:03,500 X1:100 X2:600 Y1:20 Y2:50"`, `"01:02:03.456 --> 01:02:05.000"` |
+| `test_totality_fuzz` | 6 × 8000 random codepoints in `U+0020..U+11000` (surrogates excluded); `fold_for_codec(s, c).encode(c)` never raises, for c in both Greek codecs |
+| `test_idempotence` | `fold_for_codec(fold_for_codec(x, c)[0], c)` returns `x` unchanged, empty maps, both codecs |
 | `test_guard_fires_on_forged_arrow` | `fold_document("1\n00:00:01,000 --> 00:00:02,000\n\u2010\u2010> nai\n")` raises `StructureChanged` with `"gained a '-->'"` |
 | `test_guard_allows_real_arrow_in_text` | a line literally containing `Wait --> what?` passes through untouched |
 | `test_c0_c1_controls_dropped` | `\x00`, `\x1f`, `\x85`, `\x9f` dropped; `\t \n \r` kept |
@@ -3169,7 +3263,13 @@ A reviewer ticks these off. Every one is objectively checkable.
 - [ ] A CRLF, an LF, a CR-only and a mixed-ending file each keep their exact CR/LF/CRLF counts after conversion in both directions.
 - [ ] No output file starts with `EF BB BF`, in either direction.
 - [ ] Converting twice is a byte-level no-op; the second scan reports `ALREADY_TARGET` and the second convert reports `status == "unchanged"` with `bytes_written == 0`.
-- [ ] A Chinese-language `.srt` targeted at ISO-8859-7 is `NEEDS_REVIEW` and unticked by default.
+- [ ] A Chinese-language `.srt` targeted at either Greek codec is `NEEDS_REVIEW` and unticked by default.
+- [ ] All three targets are selectable in the GUI and the CLI; `Target.CP_1253.label` is `Greek Windows (CP1253)`.
+- [ ] A file containing `… “ ” – —` targeted at **CP1253** folds *nothing* — those encode natively at `0x85 0x93 0x94 0x96 0x97` — while the same file targeted at ISO-8859-7 folds all five.
+- [ ] A file containing `Ά` targeted at CP1253 yields byte `0xA2`; targeted at ISO-8859-7 it yields `0xB6`.
+- [ ] NBSP is folded to a space under **both** Greek targets, despite being encodable in both (`ALWAYS_FOLD`).
+- [ ] `test_totality_fuzz` and `test_idempotence` both run against `cp1253` as well as `iso-8859-7`.
+- [ ] With "Normalise line endings to CRLF" **unticked** (the default), an LF-only file keeps every LF; with it ticked, every bare LF becomes CRLF and no CRLF is doubled.
 - [ ] An existing `__orig__x.srt` is never overwritten; `backup == "kept-existing"` and conversion still proceeds.
 - [ ] A file held open by another process yields `code == "LOCKED"` and survives byte-identical (Windows).
 - [ ] A file edited between scan and convert yields `code == "SOURCE_CHANGED"` and is not written.
@@ -3206,10 +3306,11 @@ Do not build any of these. They are deliberately excluded and adding them is a d
    scripts, do not add a `--onefile` target. Only honour the four coding constraints in §1.4.
 2. **A per-file source-encoding override dropdown.** Deliberately cut to keep the build tight. If
    detection is wrong for a file, the user restores from the `__orig__` backup. Accepted for v1.
-3. **A third target encoding (`cp1253`).** Only `utf-8` and `iso-8859-7` exist. `Ά` and `΅` have no
-   byte that renders correctly under both Greek codecs; this is documented, not solved.
-4. **Line-ending normalisation, in any form.** No "convert to CRLF" checkbox, no final-newline
-   injection, no CR-only repair. §6.5 is final.
+3. *(Withdrawn 2026-07-28 — see Appendix B.)* CP1253 **is** a target. Build all three.
+4. **Automatic or silent line-ending normalisation.** The default remains preserve-exactly, per §6.5.
+   A single explicitly-labelled "Normalise line endings to CRLF" checkbox, default **off**, is the
+   only permitted exception — see Appendix B for why it was added. No final-newline injection, no
+   automatic CR-only repair, and nothing may alter line endings when that box is unticked.
 5. **A BOM-writing option.** No BOM is ever written. Not configurable.
 6. **HTML-ish tag stripping** (`<i>`, `<b>`, `<font color=...>`). These are pure ASCII, encode fine,
    and are a *content* decision the user did not ask for.
@@ -3272,3 +3373,65 @@ must contain `Άντε`, not `’ντε`.
 1 file correctly reported `ALREADY_TARGET` and was never written, so it has no backup. The
 `ALREADY_TARGET`-by-byte-equality rule of §5.5 and the never-overwrite backup rule of §7.4 both
 behaved as specified.
+
+---
+
+## Appendix B — two decisions reversed by the user's actual television
+
+Later the same day, the converted UTF-8 files were tried on the owner's TV and **would not play**.
+That device is the ground truth this specification had been reasoning about second-hand, and it
+overturned two choices that had been derived from corpus statistics rather than from hardware.
+
+### B.1 CP1253 is a target, not an exclusion
+
+Out-of-scope item 3 originally read *"A third target encoding (`cp1253`). Only `utf-8` and
+`iso-8859-7` exist."* That is withdrawn.
+
+The reasoning that produced it was sound but incomplete: because the two Greek codecs are
+byte-identical across the Greek alphabet, the choice between them looks cosmetic. It is not. Byte
+`0xA2` is `Ά` in CP1253 and `’` in ISO-8859-7, and it occurred **284 times across 25 of the 26 files**
+in the field library. `Ά` has no byte that renders correctly under both. Whichever codec is wrong for
+the device is visibly wrong on nearly every file, so "pick one and document the limitation" was never
+a real option — it was a coin flip affecting almost every subtitle.
+
+The old §6.2 R5 rule made this worse. It folded `‘ ’ €` to ASCII *despite* ISO-8859-7 encoding them,
+purely to hedge against a CP1253-configured player. With CP1253 available as an explicit target that
+hedge is unnecessary data loss, so R5 is withdrawn and the folding rule becomes: **fold only what the
+chosen codec cannot encode.** That makes the table per-codec, derived rather than hand-maintained,
+with `ALWAYS_FOLD` (NBSP alone) as the single documented exception.
+
+Consequences the implementer must carry through: `Target` gains `CP_1253`; `Target.is_greek_8bit`
+replaces every `is Target.ISO_8859_7` test; `fold_for_codec`/`fold_document` take a `codec`
+argument; the GUI gains a third radio button and the CLI a third menu entry.
+
+### B.2 An explicit CRLF normalisation option
+
+Out-of-scope item 4 originally banned line-ending normalisation *"in any form."* The default is
+still preserve-exactly — that part was right, and §6.5 stands — but an opt-in checkbox is now
+permitted, because 3 of the 26 field files were **LF-only in their original state** and SRT cues are
+separated by a blank line, which hardware parsers commonly match as `\r\n\r\n`. Preserving LF
+faithfully preserves a file the target device may refuse to parse. The user must be able to opt in;
+the tool must never do it silently.
+
+### B.3 A caution about how these were found
+
+Both reversals came from one household's television, not from a survey of devices. They are the right
+calls — offering all three targets is strictly more capable than offering two, and an off-by-default
+checkbox costs nothing — but the *reasoning* in B.1 and B.2 should not be read as a general claim
+about what old TVs implement. Which Greek codepage a given device uses is not determinable from the
+subtitle files, which is exactly why the choice belongs to the user.
+
+**Verification status of this appendix.** The folding changes *were* executed before being written
+down, on the reference machine:
+
+- `_derive("cp1253")` reduces a 21-entry ISO table to 9 entries; `… “ ” – —` fold to nothing under
+  CP1253 and all five fold under ISO-8859-7
+- `ALWAYS_FOLD` ordering is correct — NBSP folds to a space under both codecs despite being
+  encodable in both
+- `Ά` encodes to `0xA2` under CP1253 and `0xB6` under ISO-8859-7
+- totality and idempotence fuzz (4 × 4000 random codepoints in `U+0020..U+11000`, surrogates
+  excluded) pass against **both** Greek codecs
+
+**Still unverified:** the three-way `Target` plumbing through `gui.py` and `cli.py`. Extend the §10
+suite so `test_totality_fuzz` and `test_idempotence` are parameterised over both Greek codecs rather
+than hardcoding `iso-8859-7`.
